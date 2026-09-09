@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>少数派</title>
+    <link>https://sspai.com</link>
+    <description>更好地运用数字产品</description>
+    <item>
+      <title>用 AI 整理我的读书笔记 &amp; 三条心得</title>
+      <link>https://sspai.com/post/114366</link>
+      <description>&lt;p&gt;这是一段&lt;strong&gt;加粗&lt;/strong&gt;的描述，含 &amp;nbsp; 实体。&lt;/p&gt;</description>
+      <pubDate>Wed, 09 Sep 2026 17:30:00 +0800</pubDate>
+    </item>
+    <item>
+      <title>一个没有 pubDate 的条目</title>
+      <link>https://sspai.com/post/114367</link>
+      <description>纯文本描述</description>
+    </item>
+  </channel>
+</rss>
