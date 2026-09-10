@@ -16,6 +16,10 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+# browser 只服务 douhot（热点宝）一个源：它无公开 API，只能走 CDP 复用用户
+# 已登录的浏览器。放进主 dependencies 会毁掉本 Server「零运行时依赖」的
+# 立身之本，故单列；未装时该源显式报错，其余 11 源照常可用。
+browser = ["playwright>=1.40"]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]

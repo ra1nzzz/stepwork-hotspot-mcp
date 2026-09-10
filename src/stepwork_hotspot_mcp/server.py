@@ -12,6 +12,7 @@ import json
 import sys
 from typing import Any, TextIO
 
+from .douhot import iter_boards
 from .models import SourceError
 from .sources import SOURCES, discover
 
@@ -50,6 +51,14 @@ _TOOLS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "list_douhot_boards",
+        "description": (
+            "列出抖音热点宝可抓的榜单（需已用 --remote-debugging-port 启动浏览器并登录）。"
+            "用于让上层选榜；失败会在 error 里说清是没装 playwright 还是没连上/没登录。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 ]
 
 
@@ -70,6 +79,7 @@ def _call_tool(name: str, args: dict[str, Any]) -> Any:
                     "title": s.title,
                     "kind": s.kind,
                     "needsKey": s.needs_key,
+                    "requiresLogin": s.requires_login,
                     "note": s.note,
                 }
                 for s in SOURCES.values()
@@ -85,6 +95,13 @@ def _call_tool(name: str, args: dict[str, Any]) -> Any:
             )
         except SourceError as e:
             raise ValueError(str(e)) from None
+    if name == "list_douhot_boards":
+        try:
+            return {"boards": list(iter_boards())}
+        except SourceError as e:
+            raise ValueError(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - CDP 异常统一转成可读错误
+            raise ValueError(f"{type(e).__name__}: {e}") from None
     raise ValueError(f"unknown tool: {name}")
 
 

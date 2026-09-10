@@ -1,7 +1,8 @@
-"""热点连接器（三个，全部免密钥）。
+"""热点连接器。
 
 选择标准是**能否在这台机器上真的拿到数据**，不是「文档上写得好」。
-2026-09-09 实测：
+
+2026-09-09 首次实测：
 
 ============  ==============  ==========================================
 源            结果            备注
@@ -16,10 +17,14 @@ InfoQ /feed  ❌ 451
 微博热搜第三方 ❌ 连不通       域名不可达
 ============  ==============  ==========================================
 
-**结论先说**：中文「热搜榜」这条路线在本机**拿不到**（无官方 RSS + 反爬 +
-第三方镜像不可达）。能稳定拿到的是「AI 论文 / 开源项目 / 中文科技媒体
-RSS」—— 这已经决定了产品的上游形态：不是「追社会热点」，而是「追技术圈
-正在讨论什么」。
+**2026-09-10 翻案**：上面那张表里的 ❌ 大部分是**我的探测方法错了**，不是源
+没了 —— arXiv 与 InfoQ 的根本原因分别是「http 不跟 301」和「默认客户端 UA
+触发 WAF」，换成 https + 浏览器 UA 后都通；微博热搜是我拿一个已死的第三方
+镜像当代理。同日新增：抖音热榜 / 头条热榜（均为**官方接口、免登录免密钥**）
++ NewsNow 五个中文聚合榜。**中文热点拿得到**，「只能追技术圈」的结论作废。
+
+当前 13 源（``SOURCES``）：11 个免登录 + 2 个热点宝（``requires_login=True``，
+走 CDP 复用用户已登录浏览器，见 :mod:`.douhot`）。
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote
 
+from .douhot import douhot_fetcher
 from .models import HotspotItem, SourceError
 
 #: 站点会按 UA 挡「非浏览器客户端」——实测 InfoQ 的**公开 RSS** 对默认
@@ -416,10 +422,14 @@ class SourceSpec:
 
     id: str
     title: str
-    kind: str  # api / rss / html
+    kind: str  # api / rss / html / browser
     needs_key: bool
     note: str
     fetch: Callable[..., list[HotspotItem]]
+    #: True = 需要登录态（走 CDP 复用用户浏览器）。与 needs_key 无关的
+    #: 另一种「不是装上就能跑」，必须在 list_sources 里如实暴露，否则
+    #: 调用方会以为配了源就有数据。
+    requires_login: bool = False
 
 
 SOURCES: dict[str, SourceSpec] = {
@@ -511,6 +521,27 @@ SOURCES: dict[str, SourceSpec] = {
         "视频区热门；与抖音同属短视频参照系",
         _newsnow_fetcher("bilibili"),
     ),
+    "douhot": SourceSpec(
+        "douhot",
+        "抖音热点宝",
+        "browser",
+        False,
+        (
+            "**需登录态**：无公开 API，走 CDP 复用用户已登录浏览器（--remote-debugging-port）。"
+            "需 pip install 'stepwork-hotspot-mcp[browser]'；端点用 DOUHOT_CDP_ENDPOINT 覆盖"
+        ),
+        douhot_fetcher(),
+        requires_login=True,
+    ),
+    "douhot_low_fans": SourceSpec(
+        "douhot_low_fans",
+        "抖音热点宝 · 低粉爆款榜",
+        "browser",
+        False,
+        "**需登录态**（同 douhot）；低粉爆款 = 对中小账号参考价值最高的一个榜",
+        douhot_fetcher("low_fans"),
+        requires_login=True,
+    ),
 }
 
 
@@ -530,6 +561,29 @@ def _iso_to_dt(value: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def select_sources(
+    sources: list[str] | None = None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """决定这次抓哪些源、哪些跳过。
+
+    抽成纯函数是为了**可测**：编排逻辑不该依赖网络（否则每次跑测试都要
+    真抓 11 个源，20s 起跳，且网络一抖就红）。
+
+    ``sources=None`` 时**默认跳过需登录态的源**（热点宝）：它要连浏览器、
+    要用户先登录，放进全源抓取等于让「没开浏览器」变成每次调用都带一条
+    错误 —— 那是噪音，不是信息。要用就显式点名。
+    """
+    if sources is None:
+        selected = [s for s in SOURCES if not SOURCES[s].requires_login]
+        skipped = [
+            {"source": s, "reason": "需要登录态（CDP）；显式传 sources 才会抓"}
+            for s in SOURCES
+            if SOURCES[s].requires_login
+        ]
+        return selected, skipped
+    return [s for s in sources if s in SOURCES], []
+
+
 def discover(
     sources: list[str] | None = None,
     limit: int = 20,
@@ -538,12 +592,19 @@ def discover(
 ) -> dict[str, Any]:
     """抓热点并按时间窗过滤、去重、排序。
 
+    Args:
+        sources: 指定源；``None`` = 全部**免登录**源（需登录的见 ``skipped``）。
+
     Returns:
-        ``{"items": [...], "errors": [{"source", "error"}], "sources": [...]}``。
+        ``{"items", "errors"[{"source","error"}], "count", "sources",
+        "skipped"[{"source","reason"}]}``。
+
         某个源失败**不会**让整个调用失败 —— 但一定出现在 ``errors`` 里
-        （静默少给一半数据比直接报错更难查）。
+        （静默少给一半数据比直接报错更难查）。``skipped`` 与 ``errors`` 分开：
+        前者是「这次没打算抓」，后者是「打算抓但失败了」，混在一起会让人
+        以为源坏了。
     """
-    selected = [s for s in (sources or list(SOURCES)) if s in SOURCES]
+    selected, skipped = select_sources(sources)
     unknown = [s for s in (sources or []) if s not in SOURCES]
     if unknown:
         raise SourceError(f"unknown sources: {', '.join(unknown)}")
@@ -603,4 +664,5 @@ def discover(
         "errors": errors,
         "count": len(items),
         "sources": selected,
+        "skipped": skipped,
     }
