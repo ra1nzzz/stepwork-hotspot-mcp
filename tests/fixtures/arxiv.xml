@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>ArXiv Query</title>
+  <entry>
+    <id>http://arxiv.org/abs/2609.06245v1</id>
+    <title>A Challenging Benchmark for Fine-Grained Image
+      Difference Identification</title>
+    <summary>We present a benchmark
+      for fine-grained difference identification.</summary>
+    <published>2026-09-09T20:00:00Z</published>
+    <link rel="alternate" href="http://arxiv.org/abs/2609.06245v1"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2609.06246v1</id>
+    <title>Second Paper</title>
+    <summary>Second summary.</summary>
+    <published>2026-09-09T18:00:00Z</published>
+    <link rel="alternate" href="http://arxiv.org/abs/2609.06246v1"/>
+  </entry>
+</feed>

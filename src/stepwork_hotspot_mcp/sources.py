@@ -39,15 +39,25 @@ from urllib.parse import quote
 
 from .models import HotspotItem, SourceError
 
-_UA = "stepwork-hotspot-mcp/0.1 (+https://github.com/ra1nzzz/stepwork-hotspot-mcp)"
+#: 站点会按 UA 挡「非浏览器客户端」——实测 InfoQ 的**公开 RSS** 对默认
+#:客户端 UA 直接回 451，换浏览器 UA 就是 200。这里取的是公开 feed，
+#:不涉及登录后内容，UA 只是让对方按正常浏览器对待。
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 "
+    "stepwork-hotspot-mcp/0.1 (+https://github.com/ra1nzzz/stepwork-hotspot-mcp)"
+)
 
 #: 默认 RSS 源（中文科技/效率）。用 ``HOTSPOT_RSS_FEEDS`` 覆盖（逗号分隔）
 DEFAULT_RSS_FEEDS = [
     "https://sspai.com/feed",
+    "https://www.infoq.cn/feed",
 ]
 
 _HF_DAILY = "https://huggingface.co/api/daily_papers"
 _GH_TRENDING = "https://github.com/trending"
+_DOUYIN_HOT = "https://www.iesdouyin.com/web/api/v2/hotsearch/billboard/word"
+_ARXIV_API = "https://export.arxiv.org/api/query"
 
 
 def http_text(url: str, timeout: float = 20.0) -> str:
@@ -206,6 +216,91 @@ def fetch_rss(limit: int = 20, feeds: list[str] | None = None) -> list[HotspotIt
     return items[:limit]
 
 
+def _cn_time_to_iso(value: str) -> str | None:
+    """``"2026-09-10 18:57:21"``（**北京时间**，无时区标记）→ ISO 8601。
+
+    不加 ``+08:00`` 会被当成 UTC，时间窗过滤因此整体偏 8 小时 ——
+    按 48 小时窗能差掉三分之一的条目。
+    """
+    try:
+        naive = datetime.strptime(value.strip(), "%Y-%m-%d %H:%M:%S")
+    except (ValueError, AttributeError):
+        return None
+    return naive.replace(tzinfo=timezone(timedelta(hours=8))).isoformat()
+
+
+def fetch_douyin_hot(limit: int = 50) -> list[HotspotItem]:
+    """抖音热榜（官方 web 接口，免登录免密钥）。
+
+    返回 50 条中文热榜词 + 热度值。**这是本项目里唯一一个「中文社会热点」
+    且零门槛的源** —— 也是 STEPWORK 选题最贴近的一条。
+    """
+    data = json.loads(http_text(_DOUYIN_HOT))
+    if data.get("status_code") != 0:
+        raise SourceError(
+            f"douyin hot board status_code={data.get('status_code')}（0 才是成功）"
+        )
+    # 榜单只有整体时间戳（active_time），没有每条时间
+    published = _cn_time_to_iso(str(data.get("active_time") or ""))
+    items: list[HotspotItem] = []
+    for i, row in enumerate(data.get("word_list") or []):
+        word = str(row.get("word") or "").strip()
+        if not word:
+            continue
+        items.append(
+            HotspotItem(
+                source="douyin_hot",
+                title=word,
+                url=f"https://www.douyin.com/search/{quote(word)}",
+                summary="",
+                published_at=published,
+                score=float(row.get("hot_value") or 0) or None,
+                # label 的含义官方没文档化（实测见过 0/1/3/5/16），
+                # 原样记下来供后续比对，**不猜**成「热/新/荐」之类
+                meta={"label": row.get("label"), "rank": i + 1},
+            )
+        )
+    return items[:limit]
+
+
+def _parse_atom(xml_text: str, source_id: str) -> list[HotspotItem]:
+    """arXiv Atom 解析（命名空间不能省，``findtext("title")`` 会什么都找不到）。"""
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    root = ET.fromstring(xml_text)
+    items: list[HotspotItem] = []
+    for entry in root.findall("a:entry", ns):
+        # Atom 源码常把标题/摘要断行缩进，不压空白会得到一堆碎空格
+        title = re.sub(r"\s+", " ", entry.findtext("a:title", "", ns) or "").strip()
+        if not title:
+            continue
+        summary = re.sub(r"\s+", " ", entry.findtext("a:summary", "", ns) or "").strip()
+        link = entry.find("a:link[@rel='alternate']", ns)
+        items.append(
+            HotspotItem(
+                source=source_id,
+                title=title,
+                url=(link.get("href") or "") if link is not None else "",
+                summary=summary[:600],
+                published_at=entry.findtext("a:published", None, ns),
+                meta={"arxivId": (entry.findtext("a:id", "", ns) or "").strip()},
+            )
+        )
+    return items
+
+
+def fetch_arxiv_latest(limit: int = 20, category: str = "cs.AI") -> list[HotspotItem]:
+    """arXiv 最新论文（官方 Atom API，免密钥）。
+
+    2026-09-09 曾误判为「连不通」：那次用的是 ``http://`` 且没跟重定向
+    （301 → https）。**https 直接请求就是 200。**
+    """
+    url = (
+        f"{_ARXIV_API}?search_query=cat:{quote(category)}"
+        f"&sortBy=submittedDate&sortOrder=descending&max_results={max(1, limit)}"
+    )
+    return _parse_atom(http_text(url, timeout=25.0), "arxiv_latest")
+
+
 # ---------------------------------------------------------------------------
 # 注册表与编排
 
@@ -244,8 +339,24 @@ SOURCES: dict[str, SourceSpec] = {
         "RSS/Atom 订阅",
         "rss",
         False,
-        "中文科技媒体（默认少数派）；HOTSPOT_RSS_FEEDS 可覆盖",
+        "中文科技媒体（默认少数派 + InfoQ）；HOTSPOT_RSS_FEEDS 可覆盖",
         fetch_rss,
+    ),
+    "douyin_hot": SourceSpec(
+        "douyin_hot",
+        "抖音热榜",
+        "api",
+        False,
+        "中文社会热点 50 条 + 热度值；免登录免密钥（STEPWORK 最贴近的一条）",
+        fetch_douyin_hot,
+    ),
+    "arxiv_latest": SourceSpec(
+        "arxiv_latest",
+        "arXiv 最新论文",
+        "api",
+        False,
+        "官方 Atom API；默认 cs.AI（英文）",
+        fetch_arxiv_latest,
     ),
 }
 

@@ -12,12 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from stepwork_hotspot_mcp.models import HotspotItem
+from stepwork_hotspot_mcp.models import HotspotItem, SourceError
 from stepwork_hotspot_mcp.sources import (
     SOURCES,
     _parse_gh_trending,
     _parse_rss,
     discover,
+    fetch_arxiv_latest,
+    fetch_douyin_hot,
     fetch_huggingface_daily,
     strip_html,
 )
@@ -158,6 +160,50 @@ def test_source_failure_is_reported_not_swallowed(monkeypatch: pytest.MonkeyPatc
 def test_unknown_source_is_rejected() -> None:
     with pytest.raises(Exception, match="unknown sources"):
         discover(sources=["weibo_hot_search"])
+
+
+def test_douyin_hot_parses_words_and_beijing_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    import stepwork_hotspot_mcp.sources as src
+
+    payload = json.loads((FIXTURES / "douyin_hot.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(src, "http_text", lambda url, timeout=20.0: json.dumps(payload))
+    items = fetch_douyin_hot(limit=50)
+
+    assert len(items) == 3
+    assert items[0].title == "青岛货轮火灾已造成20人遇难"
+    assert items[0].score == 11629010.0
+    assert items[0].url.startswith("https://www.douyin.com/search/")
+    assert items[0].meta["rank"] == 1
+    # active_time 是北京时间且不带时区：不补 +08:00 会被当成 UTC，
+    # 48 小时窗会整体偏 8 小时（少掉三分之一条目）
+    assert items[0].published_at == "2026-09-10T18:57:21+08:00"
+
+
+def test_douyin_hot_rejects_nonzero_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    import stepwork_hotspot_mcp.sources as src
+
+    monkeypatch.setattr(
+        src, "http_text", lambda url, timeout=20.0: json.dumps({"status_code": 8})
+    )
+    with pytest.raises(SourceError, match="status_code=8"):
+        fetch_douyin_hot()
+
+
+def test_arxiv_parses_atom_with_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    import stepwork_hotspot_mcp.sources as src
+
+    xml = (FIXTURES / "arxiv.xml").read_text(encoding="utf-8")
+    monkeypatch.setattr(src, "http_text", lambda url, timeout=20.0: xml)
+    items = fetch_arxiv_latest(limit=10)
+
+    assert len(items) == 2
+    # 标题里的换行要压成单空格（Atom 源码常断行）
+    assert items[0].title == (
+        "A Challenging Benchmark for Fine-Grained Image Difference Identification"
+    )
+    assert items[0].url == "http://arxiv.org/abs/2609.06245v1"
+    assert items[0].meta["arxivId"] == "http://arxiv.org/abs/2609.06245v1"
+    assert items[0].published_at == "2026-09-09T20:00:00Z"
 
 
 def test_item_id_is_stable_and_source_scoped() -> None:
