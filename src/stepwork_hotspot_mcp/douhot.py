@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
@@ -471,6 +471,7 @@ def fetch_douhot(
     *,
     driver: DouhotDriver | None = None,
     board: str | None = None,
+    source_id: str = "douhot",
 ) -> list[HotspotItem]:
     """抓热点宝一个榜单。
 
@@ -478,6 +479,10 @@ def fetch_douhot(
         limit: 最多返回条数。
         driver: 注入的 driver（测试用 fake；生产走 CDP）。
         board: 榜单 id 或完整 URL；``None`` = 热点榜。
+        source_id: 写进条目的 ``source``。**必须与 :data:`SOURCES` 的 key 一致** ——
+            下游按 ``source`` 过滤与分组做源内分位，取一个自成一套的名字
+            （比如两个榜都写 ``douhot``）会让 ``sources=["douhot_low_fans"]``
+            静默返回空。
 
     Raises:
         SourceError: playwright 未装 / CDP 连不上 / 页面需要登录。
@@ -493,7 +498,9 @@ def fetch_douhot(
             f"确认浏览器已用 --remote-debugging-port 启动并登录 douhot.douyin.com；"
             f"端点可用 DOUHOT_CDP_ENDPOINT 覆盖（默认 {DEFAULT_CDP_ENDPOINT}）"
         ) from e
-    items = parse_snapshot(snapshot)
+    items = [
+        replace(it, source=source_id) for it in parse_snapshot(snapshot)
+    ]
     if not items:
         raise SourceError(
             "热点宝返回空：可能是未登录（页面停在登录页）或榜单结构已变。"
@@ -502,13 +509,23 @@ def fetch_douhot(
     return items[:limit]
 
 
-def douhot_fetcher(board: str | None = None) -> Callable[..., list[HotspotItem]]:
-    """按 board 生成注册表用的 fetch 函数（与 ``_newsnow_fetcher`` 同构）。"""
+def douhot_fetcher(
+    board: str | None = None, *, source_id: str = "douhot"
+) -> Callable[..., list[HotspotItem]]:
+    """按 board 生成注册表用的 fetch 函数（与 ``_newsnow_fetcher`` 同构）。
+
+    ``source_id`` 默认与注册表 key 同名；注册非默认榜时务必显式传，
+    否则条目会张冠李戴（两个榜的条目挂同一个 source）。
+    """
 
     def _fetch(limit: int = 30, **_: Any) -> list[HotspotItem]:
-        return fetch_douhot(limit, board=board)
+        return fetch_douhot(limit, board=board, source_id=source_id)
 
     _fetch.__name__ = f"fetch_douhot_{board or DEFAULT_BOARD}"
+    # 把 source_id 挂在函数上：注册表测试据此断言「每个源的 fetch 声明的
+    # source 名必须等于它在 SOURCES 里的 key」—— 闭包本身看不见这个值，
+    # 不挂出来就只能靠人肉记得同步改两处。
+    _fetch.source_id = source_id
     return _fetch
 
 

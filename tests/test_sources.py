@@ -233,8 +233,10 @@ def test_newsnow_scopes_source_by_board(monkeypatch: pytest.MonkeyPatch) -> None
     items = fetch_newsnow(limit=10, boards=["weibo"])
 
     assert len(items) == 2
-    # source 带榜单名：不同平台的同名条目不能互相吃掉
-    assert items[0].source == "newsnow:weibo"
+    # source 必须同时满足两点：带榜单名（不同平台同名条目不互相吃掉），
+    # 且**与 SOURCES 的 key 一致**（下游按 source 值过滤/分组做源内分位）
+    assert items[0].source == "newsnow_weibo"
+    assert items[0].source in SOURCES
     assert items[0].title == "青岛货轮火灾造成重大人员伤亡"
     assert items[0].meta["board"] == "weibo"
     # extra.info 是热度文案，进 summary

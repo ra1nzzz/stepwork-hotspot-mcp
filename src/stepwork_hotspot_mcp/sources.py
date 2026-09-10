@@ -346,8 +346,12 @@ def fetch_newsnow(limit: int = 30, boards: list[str] | None = None) -> list[Hots
 
     一个端点顶十个源。**公共实例是社区托管**（生产建议自部署，项目开源）；
     单个榜单挂了不影响其它榜单，但会收集进错误信息。
-    ``source`` 记为 ``newsnow:<board>`` —— 平台是去重与展示的一部分，
-    混成一个 ``newsnow`` 会让不同平台的同名条目互相吃掉。
+
+    ``source`` 记为 ``newsnow_<board>`` —— **与 :data:`SOURCES` 的 key 一致**。
+    平台必须体现在 ``source`` 里（混成一个 ``newsnow`` 会让不同平台的同名条目
+    互相吃掉），但**不能自成一套命名**：下游是按 ``source`` 值过滤与分组做
+    源内分位的（``sources=["newsnow_bilibili"]``），曾经用的 ``newsnow:<board>``
+    与 key 对不上，过滤会静默返回空。
     """
     selected = boards or list(DEFAULT_NEWNOW_BOARDS)
     # 多榜单时按榜单**均分** limit：否则 discover 一截断就只剩第一个榜单，
@@ -376,7 +380,7 @@ def fetch_newsnow(limit: int = 30, boards: list[str] | None = None) -> list[Hots
             extra = row.get("extra") or {}
             bucket.append(
                 HotspotItem(
-                    source=f"newsnow:{board}",
+                    source=f"newsnow_{board}",
                     title=title,
                     url=str(row.get("url") or row.get("mobileUrl") or ""),
                     summary=str(extra.get("info") or "")[:300],
@@ -539,7 +543,7 @@ SOURCES: dict[str, SourceSpec] = {
         "browser",
         False,
         "**需登录态**（同 douhot）；低粉爆款 = 对中小账号参考价值最高的一个榜",
-        douhot_fetcher("low_fans"),
+        douhot_fetcher("low_fans", source_id="douhot_low_fans"),
         requires_login=True,
     ),
 }

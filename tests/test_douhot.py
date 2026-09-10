@@ -265,3 +265,36 @@ def test_source_spec_exposes_requires_login() -> None:
     assert SOURCES["douhot"].requires_login is True
     assert SOURCES["douhot"].kind == "browser"
     assert SOURCES["toutiao_hot"].requires_login is False
+
+
+def test_source_id_must_match_registry_key() -> None:
+    """条目 ``source`` 必须与注册表 key 一致。
+
+    下游按 ``source`` 值过滤与分组做源内分位。曾经两个热点宝榜都写
+    ``douhot`` —— ``sources=["douhot_low_fans"]`` 会静默返回空
+    （不报错，只是永远没数据，最难查的那种）。
+    """
+    from stepwork_hotspot_mcp.sources import SOURCES
+
+    snap = DouhotSnapshot(board="low_fans", payloads=[{"list": [{"word": "话题"}]}])
+    driver = FakeDriver(snap)
+    low = fetch_douhot(5, driver=driver, board="low_fans", source_id="douhot_low_fans")
+    default = fetch_douhot(5, driver=driver, board="low_fans")
+
+    assert low[0].source == "douhot_low_fans"
+    assert low[0].source in SOURCES
+    assert default[0].source == "douhot"
+    # 不同 source ⇒ 不同 id，两榜不会互相去重掉
+    assert low[0].id != default[0].id
+
+
+def test_registry_fetchers_declare_matching_source_id() -> None:
+    """注册表里每个热点宝源的 fetch，声明的 source 名必须等于它的 key。
+
+    这是「防复发」而不是「防实现」：source 名写在闭包里，人很容易只改
+    注册表 key 而忘了改 source —— 结果就是按 key 过滤永远拿到空。
+    """
+    from stepwork_hotspot_mcp.sources import SOURCES
+
+    for key in ("douhot", "douhot_low_fans"):
+        assert getattr(SOURCES[key].fetch, "source_id", None) == key
