@@ -21,6 +21,8 @@ from stepwork_hotspot_mcp.sources import (
     fetch_arxiv_latest,
     fetch_douyin_hot,
     fetch_huggingface_daily,
+    fetch_newsnow,
+    fetch_toutiao_hot,
     strip_html,
 )
 
@@ -204,6 +206,126 @@ def test_arxiv_parses_atom_with_namespace(monkeypatch: pytest.MonkeyPatch) -> No
     assert items[0].url == "http://arxiv.org/abs/2609.06245v1"
     assert items[0].meta["arxivId"] == "http://arxiv.org/abs/2609.06245v1"
     assert items[0].published_at == "2026-09-09T20:00:00Z"
+
+
+def test_toutiao_hot_reads_title_url_hotvalue(monkeypatch: pytest.MonkeyPatch) -> None:
+    import stepwork_hotspot_mcp.sources as src
+
+    payload = json.loads((FIXTURES / "toutiao_hot.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(src, "http_text", lambda url, timeout=20.0: json.dumps(payload))
+    items = fetch_toutiao_hot(limit=10)
+
+    assert len(items) == 2
+    assert items[0].title == "习近平对青岛货轮火灾作出重要指示"
+    assert items[0].url.endswith("7683828786948784678")
+    assert items[0].score == 7268496.0
+    assert items[0].meta["label"] == "hot"
+    assert items[0].meta["rank"] == 1
+    # 接口不给每条时间 → 按抓取时间记（否则时间窗会把它全过滤掉）
+    assert items[0].published_at is not None
+
+
+def test_newsnow_scopes_source_by_board(monkeypatch: pytest.MonkeyPatch) -> None:
+    import stepwork_hotspot_mcp.sources as src
+
+    payload = json.loads((FIXTURES / "newsnow_weibo.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(src, "http_text", lambda url, timeout=20.0: json.dumps(payload))
+    items = fetch_newsnow(limit=10, boards=["weibo"])
+
+    assert len(items) == 2
+    # source 带榜单名：不同平台的同名条目不能互相吃掉
+    assert items[0].source == "newsnow:weibo"
+    assert items[0].title == "青岛货轮火灾造成重大人员伤亡"
+    assert items[0].meta["board"] == "weibo"
+    # extra.info 是热度文案，进 summary
+    assert items[0].summary == "1162万"
+    assert items[0].published_at == "2026-09-10T11:04:32.400000+00:00"
+
+
+def test_newsnow_splits_limit_across_boards(monkeypatch: pytest.MonkeyPatch) -> None:
+    """多榜单必须均分 limit，否则 discover 一截断就只剩第一个榜单。"""
+    import stepwork_hotspot_mcp.sources as src
+
+    payload = json.loads((FIXTURES / "newsnow_weibo.json").read_text(encoding="utf-8"))
+    calls: list[str] = []
+
+    def fake(url: str, timeout: float = 20.0) -> str:
+        calls.append(url)
+        return json.dumps(payload)
+
+    monkeypatch.setattr(src, "http_text", fake)
+    items = fetch_newsnow(limit=4, boards=["weibo", "zhihu"])
+    # 4 条 / 2 榜 = 每榜 2 条；固定件只有 2 条，故各取 2
+    assert len(calls) == 2
+    assert len(items) == 4
+    assert {i.meta["board"] for i in items} == {"weibo", "zhihu"}
+    # 交错输出：外层配额很小时也能每个榜都露面，而不是被第一个榜吃满
+    assert [i.meta["board"] for i in items] == ["weibo", "zhihu", "weibo", "zhihu"]
+
+
+def test_rank_keeps_board_order_within_same_timestamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """热榜的名次就是重要性：时间/热度都相同时必须按 rank 保序。"""
+    now = datetime.now(timezone.utc)
+
+    def feed(**_kwargs: object) -> list[HotspotItem]:
+        return [
+            HotspotItem(source="x", title="第三", published_at=now.isoformat(), meta={"rank": 3}),
+            HotspotItem(source="x", title="第一", published_at=now.isoformat(), meta={"rank": 1}),
+            HotspotItem(source="x", title="第二", published_at=now.isoformat(), meta={"rank": 2}),
+        ]
+
+    _patch_sources(monkeypatch, rss=feed)
+    out = discover(sources=["rss"], limit=10, window_hours=48)
+    assert [i["title"] for i in out["items"]] == ["第一", "第二", "第三"]
+
+
+def test_every_source_gets_a_share_of_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """全局排序 + 截断会让「用抓取时刻当时间」的源吃满限额，其它源一条不剩。
+
+    实测事故：头条（published_at=now）50 条吃满 limit=40，微博/知乎/B站
+    全部被挤掉。故改为按源配额 + 交错。
+    """
+    now = datetime.now(timezone.utc)
+    later = (now.replace(microsecond=0)).isoformat()
+
+    def big(**_kwargs: object) -> list[HotspotItem]:
+        return [
+            HotspotItem(source="a", title=f"a{i}", published_at=later, meta={"rank": i})
+            for i in range(1, 51)
+        ]
+
+    def small(**_kwargs: object) -> list[HotspotItem]:
+        return [HotspotItem(source="b", title="b1", published_at=_iso(3))]
+
+    _patch_sources(monkeypatch, rss=big, github_trending=small)
+    out = discover(sources=["rss", "github_trending"], limit=10, window_hours=48)
+    titles = [i["title"] for i in out["items"]]
+    # b1 必须出现，且不能全是 a
+    assert "b1" in titles
+    assert sum(1 for t in titles if t.startswith("a")) <= 9
+
+
+def test_items_from_different_sources_interleave(monkeypatch: pytest.MonkeyPatch) -> None:
+    """交错合并：前几条应当来自不同源，而不是第一个源的完整榜单。"""
+    now = datetime.now(timezone.utc).isoformat()
+
+    def feed_a(**_kwargs: object) -> list[HotspotItem]:
+        return [
+            HotspotItem(source="a", title=f"a{i}", published_at=now, meta={"rank": i})
+            for i in range(1, 6)
+        ]
+
+    def feed_b(**_kwargs: object) -> list[HotspotItem]:
+        return [
+            HotspotItem(source="b", title=f"b{i}", published_at=now, meta={"rank": i})
+            for i in range(1, 6)
+        ]
+
+    _patch_sources(monkeypatch, rss=feed_a, github_trending=feed_b)
+    out = discover(sources=["rss", "github_trending"], limit=10, window_hours=48)
+    assert [i["title"] for i in out["items"]][:4] == ["a1", "b1", "a2", "b2"]
 
 
 def test_item_id_is_stable_and_source_scoped() -> None:

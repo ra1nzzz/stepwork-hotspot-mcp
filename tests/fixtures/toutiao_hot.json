@@ -1,0 +1,23 @@
+{
+  "status": "success",
+  "impr_id": "20260910191028010000000000000000",
+  "data": [
+    {
+      "ClusterId": 7683828591968567337,
+      "Title": "习近平对青岛货轮火灾作出重要指示",
+      "Url": "https://www.toutiao.com/article/7683828786948784678",
+      "HotValue": 7268496,
+      "Label": "hot",
+      "QueryWord": "青岛货轮火灾"
+    },
+    {
+      "ClusterId": 7683828591968567338,
+      "Title": "油价或迎二连涨",
+      "Url": "https://www.toutiao.com/article/7683828786948784679",
+      "HotValue": 5123000,
+      "Label": "hot",
+      "QueryWord": "油价调整"
+    }
+  ],
+  "fixed_top_data": []
+}

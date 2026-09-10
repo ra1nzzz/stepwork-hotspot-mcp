@@ -1,0 +1,22 @@
+{
+  "status": "cache updated: 1789038272400",
+  "id": "weibo",
+  "updatedTime": 1789038272400,
+  "info": "微博热搜",
+  "items": [
+    {
+      "id": "青岛货轮火灾造成重大人员伤亡",
+      "title": "青岛货轮火灾造成重大人员伤亡",
+      "url": "https://s.weibo.com/weibo?q=%23%E9%9D%92%E5%B2%9B%23",
+      "mobileUrl": "https://s.weibo.com/weibo?q=%23%E9%9D%92%E5%B2%9B%23",
+      "extra": {"info": "1162万"}
+    },
+    {
+      "id": "油价或迎二连涨",
+      "title": "油价或迎二连涨",
+      "url": "https://s.weibo.com/weibo?q=%23%E6%B2%B9%E4%BB%B7%23",
+      "mobileUrl": "https://s.weibo.com/weibo?q=%23%E6%B2%B9%E4%BB%B7%23",
+      "extra": {"info": "513万"}
+    }
+  ]
+}

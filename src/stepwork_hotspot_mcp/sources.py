@@ -58,6 +58,12 @@ _HF_DAILY = "https://huggingface.co/api/daily_papers"
 _GH_TRENDING = "https://github.com/trending"
 _DOUYIN_HOT = "https://www.iesdouyin.com/web/api/v2/hotsearch/billboard/word"
 _ARXIV_API = "https://export.arxiv.org/api/query"
+_TOUTIAO_HOT = "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc"
+#: NewsNow 是**开源**聚合（可自部署）；这里用的是社区公共实例，
+#: 一个端点覆盖十来个中文/英文榜单，是本项目性价比最高的一个源。
+_NEWNOW = "https://newsnow.busiyi.world/api/s"
+#: 默认榜单：微博 / 知乎 / 抖音 / 头条 / 百度（中文社会热点为主）
+DEFAULT_NEWNOW_BOARDS = ("weibo", "zhihu", "douyin", "toutiao", "baidu")
 
 
 def http_text(url: str, timeout: float = 20.0) -> str:
@@ -301,6 +307,105 @@ def fetch_arxiv_latest(limit: int = 20, category: str = "cs.AI") -> list[Hotspot
     return _parse_atom(http_text(url, timeout=25.0), "arxiv_latest")
 
 
+def fetch_toutiao_hot(limit: int = 50) -> list[HotspotItem]:
+    """今日头条热榜（**官方**接口，免登录免密钥）。
+
+    50 条中文热点 + ``HotValue`` + ``Label``（hot/新/沸之类）。
+    官方 JSON、无需签名，是中文侧最稳的一条。
+    """
+    data = json.loads(http_text(_TOUTIAO_HOT))
+    # 接口不返回每条时间：热榜本身就是「此刻」，按抓取时间记
+    now = datetime.now(timezone.utc).isoformat()
+    items: list[HotspotItem] = []
+    for i, row in enumerate(data.get("data") or []):
+        title = str(row.get("Title") or "").strip()
+        if not title:
+            continue
+        items.append(
+            HotspotItem(
+                source="toutiao_hot",
+                title=title,
+                url=str(row.get("Url") or ""),
+                summary=str(row.get("QueryWord") or "")[:300],
+                published_at=now,
+                score=float(row.get("HotValue") or 0) or None,
+                meta={"label": row.get("Label"), "rank": i + 1},
+            )
+        )
+    return items[:limit]
+
+
+def fetch_newsnow(limit: int = 30, boards: list[str] | None = None) -> list[HotspotItem]:
+    """NewsNow 聚合（微博 / 知乎 / 抖音 / 头条 / 百度 …）。
+
+    一个端点顶十个源。**公共实例是社区托管**（生产建议自部署，项目开源）；
+    单个榜单挂了不影响其它榜单，但会收集进错误信息。
+    ``source`` 记为 ``newsnow:<board>`` —— 平台是去重与展示的一部分，
+    混成一个 ``newsnow`` 会让不同平台的同名条目互相吃掉。
+    """
+    selected = boards or list(DEFAULT_NEWNOW_BOARDS)
+    # 多榜单时按榜单**均分** limit：否则 discover 一截断就只剩第一个榜单，
+    # 「聚合」名存实亡（实测 5 榜 × 30 条 → 截断 20 条后全是微博）
+    per_board = max(1, limit // max(1, len(selected)))
+    buckets: dict[str, list[HotspotItem]] = {}
+    errors: list[str] = []
+    for board in selected:
+        try:
+            data = json.loads(http_text(f"{_NEWNOW}?id={quote(board)}", timeout=15.0))
+        except (SourceError, ValueError) as e:
+            errors.append(f"{board}: {e}")
+            continue
+        updated = data.get("updatedTime")
+        published = None
+        if isinstance(updated, (int, float)) and updated > 0:
+            # 毫秒时间戳（实测 1789038272400）
+            published = datetime.fromtimestamp(updated / 1000, timezone.utc).isoformat()
+        bucket: list[HotspotItem] = []
+        for i, row in enumerate(data.get("items") or []):
+            if i >= per_board:
+                break
+            title = str(row.get("title") or "").strip()
+            if not title:
+                continue
+            extra = row.get("extra") or {}
+            bucket.append(
+                HotspotItem(
+                    source=f"newsnow:{board}",
+                    title=title,
+                    url=str(row.get("url") or row.get("mobileUrl") or ""),
+                    summary=str(extra.get("info") or "")[:300],
+                    published_at=published,
+                    meta={"board": board, "rank": i + 1, "via": "newsnow"},
+                )
+            )
+        buckets[board] = bucket
+    if not any(buckets.values()) and errors:
+        raise SourceError("; ".join(errors))
+    # 榜单之间**交错**输出：外层 discover 只给本源几条配额，顺序填充会让
+    # 配额全被第一个榜单吃掉（实测只剩微博，知乎/百度一条不剩）
+    merged: list[HotspotItem] = []
+    for i in range(per_board):
+        for board in selected:
+            bucket = buckets.get(board) or []
+            if i < len(bucket):
+                merged.append(bucket[i])
+    return merged
+
+
+def _newsnow_fetcher(board: str) -> Callable[..., list[HotspotItem]]:
+    """把某个榜单固化成独立源的抓取函数。
+
+    **为什么拆成多个源而不是一个聚合源**：``discover`` 按源分配额并在源内
+    按时间排序，聚合源里「更新时间最新的那个榜」会把配额全吃掉（实测只剩
+    微博，知乎/百度一条不剩）。拆开后每个榜各有一份配额，交错展示。
+    """
+
+    def fetch(limit: int = 30, **_kwargs: object) -> list[HotspotItem]:
+        return fetch_newsnow(limit=limit, boards=[board])
+
+    return fetch
+
+
 # ---------------------------------------------------------------------------
 # 注册表与编排
 
@@ -358,7 +463,61 @@ SOURCES: dict[str, SourceSpec] = {
         "官方 Atom API；默认 cs.AI（英文）",
         fetch_arxiv_latest,
     ),
+    "toutiao_hot": SourceSpec(
+        "toutiao_hot",
+        "今日头条热榜",
+        "api",
+        False,
+        "**官方**接口免登录；50 条中文热点 + HotValue（中文侧最稳）",
+        fetch_toutiao_hot,
+    ),
+    "newsnow_weibo": SourceSpec(
+        "newsnow_weibo",
+        "NewsNow · 微博热搜",
+        "api",
+        False,
+        "中文社会热点；公共实例为社区托管（开源可自部署）",
+        _newsnow_fetcher("weibo"),
+    ),
+    "newsnow_zhihu": SourceSpec(
+        "newsnow_zhihu",
+        "NewsNow · 知乎热榜",
+        "api",
+        False,
+        "中文问答/观点；适合做「争议型」选题",
+        _newsnow_fetcher("zhihu"),
+    ),
+    "newsnow_toutiao": SourceSpec(
+        "newsnow_toutiao",
+        "NewsNow · 今日头条",
+        "api",
+        False,
+        "中文资讯热点",
+        _newsnow_fetcher("toutiao"),
+    ),
+    "newsnow_baidu": SourceSpec(
+        "newsnow_baidu",
+        "NewsNow · 百度热搜",
+        "api",
+        False,
+        "中文搜索热度（与抖音热榜互补）",
+        _newsnow_fetcher("baidu"),
+    ),
+    "newsnow_bilibili": SourceSpec(
+        "newsnow_bilibili",
+        "NewsNow · 哔哩哔哩",
+        "api",
+        False,
+        "视频区热门；与抖音同属短视频参照系",
+        _newsnow_fetcher("bilibili"),
+    ),
 }
+
+
+def _rank(item: HotspotItem) -> int:
+    """取榜单名次（缺则为 0）；用于同时间同热度时的保序。"""
+    raw = item.meta.get("rank")
+    return raw if isinstance(raw, int) else 0
 
 
 def _iso_to_dt(value: str | None) -> datetime | None:
@@ -392,6 +551,13 @@ def discover(
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, window_hours))
     seen: dict[str, HotspotItem] = {}
     errors: list[dict[str, str]] = []
+    # 每个源的配额。**不能**把所有条目扔进一个全局排序再截断 —— 那等于让
+    #「拿抓取时刻当时间」的源（头条/抖音/榜单类）永远排在最前，其它源一条
+    # 都露不出来（实测：头条 50 条吃满 40 的限额，微博/知乎/B站全被挤掉）；
+    # 且不同源的 score 量纲不可比（抖音千万级 vs GitHub star 千级 vs 无分值），
+    # 跨源比 score 没有意义。
+    per_source = max(1, (limit + len(selected) - 1) // max(1, len(selected)))
+    per_source_items: dict[str, list[HotspotItem]] = {}
 
     for name in selected:
         spec = SOURCES[name]
@@ -400,22 +566,38 @@ def discover(
         except Exception as e:  # noqa: BLE001 - 单源失败不拖垮整体
             errors.append({"source": name, "error": f"{type(e).__name__}: {e}"})
             continue
+        kept: list[HotspotItem] = []
         for item in fetched:
             published = _iso_to_dt(item.published_at)
             if published is not None and published < cutoff:
                 continue
             if query and query.lower() not in (item.title + item.summary).lower():
                 continue
-            seen.setdefault(item.id, item)
+            if item.id in seen:
+                continue
+            seen[item.id] = item
+            kept.append(item)
+        # 源内部保序：时间 desc → 热度 desc → 榜单名次 asc
+        kept.sort(
+            key=lambda it: (
+                _iso_to_dt(it.published_at) is None,
+                -(_iso_to_dt(it.published_at) or datetime.now(timezone.utc)).timestamp(),
+                -(it.score or 0),
+                _rank(it),
+            )
+        )
+        per_source_items[name] = kept[:per_source]
 
-    items = sorted(
-        seen.values(),
-        key=lambda it: (
-            _iso_to_dt(it.published_at) is None,  # 无时间的排后面
-            -(_iso_to_dt(it.published_at) or datetime.now(timezone.utc)).timestamp(),
-            -(it.score or 0),
-        ),
-    )[:limit]
+    # 交错合并（各源第 1 条 → 各源第 2 条 …）：结果才是「聚合榜」，
+    # 而不是「某一个源的完整榜单 + 其它源的残渣」
+    merged: list[HotspotItem] = []
+    for i in range(per_source):
+        for name in selected:
+            bucket = per_source_items.get(name) or []
+            if i < len(bucket):
+                merged.append(bucket[i])
+
+    items = merged[:limit]
     return {
         "items": [it.to_dict() for it in items],
         "errors": errors,
