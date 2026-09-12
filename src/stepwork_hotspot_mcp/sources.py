@@ -532,21 +532,34 @@ SOURCES: dict[str, SourceSpec] = {
         False,
         (
             "**需登录态**：无公开 API，走 CDP 复用用户已登录浏览器（--remote-debugging-port）。"
-            "需 pip install 'stepwork-hotspot-mcp[browser]'；端点用 DOUHOT_CDP_ENDPOINT 覆盖"
+            "需 pip install 'stepwork-hotspot-mcp[browser]'；端点用 DOUHOT_CDP_ENDPOINT 覆盖。"
+            "一页同时含视频榜 / 话题榜 / 搜索榜"
         ),
         douhot_fetcher(),
         requires_login=True,
     ),
-    "douhot_low_fans": SourceSpec(
-        "douhot_low_fans",
-        "抖音热点宝 · 低粉爆款榜",
+    "douhot_hotword": SourceSpec(
+        "douhot_hotword",
+        "抖音热点宝 · 内容词趋势",
         "browser",
         False,
-        "**需登录态**（同 douhot）；低粉爆款 = 对中小账号参考价值最高的一个榜",
-        douhot_fetcher("low_fans", source_id="douhot_low_fans"),
+        "**需登录态**（同 douhot）；内容词趋势 = 你关注领域里正在起量的词",
+        douhot_fetcher("hotword", source_id="douhot_hotword"),
         requires_login=True,
     ),
 }
+
+# 已移除：``douhot_low_fans``（2026-09-13）。
+#
+# 它是照「榜单名即路径」的假设编出来的 —— 注册表里写着 ``douhot_fetcher("low_fans")``，
+# 于是拼出 ``https://douhot.douyin.com/low_fans``。实测**没有这个路由**，而微前端对
+# 未知路由返回 **200 的 404 页**，所以它不报 404：它把 404 页上的微前端包注册表与问卷
+# 表单当成榜单数据解析出来，最后抛的是「热点宝返回空：可能是未登录」——
+# **一个把排查方向指错地方的错误**（真正的毛病是路由不存在，不是没登录）。
+#
+# 真实的「低粉爆款视频榜」是榜单聚合页里的一个区块，数据来自同一个
+# ``/douhot/v1/material/video_billboard`` 接口（不同的筛选参数）。等拿到那个筛选
+# 参数再作为独立源注册；在那之前，把它当独立榜注册只会返回**看着像数据的垃圾**。
 
 
 def _rank(item: HotspotItem) -> int:
